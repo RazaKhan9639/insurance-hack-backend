@@ -78,6 +78,8 @@ const createCourse = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('Validation errors:', errors.array());
+      console.log('Request body:', req.body);
       return res.status(400).json(createErrorResponse('Validation failed', 400, errors.array()));
     }
 
@@ -129,6 +131,8 @@ const updateCourse = async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('Validation errors:', errors.array());
+      console.log('Request body:', req.body);
       return res.status(400).json(createErrorResponse('Validation failed', 400, errors.array()));
     }
 

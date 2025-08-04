@@ -12,8 +12,12 @@ const {
   getAllCommissions,
   updateCommissionStatus,
   processBulkPayout,
+  processManualPayout,
+  getPayoutHistory,
   getSystemStats,
-  performBulkActions
+  performBulkActions,
+  getPurchaseTracking,
+  getAgentAnalytics
 } = require('../controllers/adminController');
 
 // @route   GET /api/admin/dashboard
@@ -72,6 +76,31 @@ router.post('/commissions/bulk-payout', authenticateToken, isAdmin, [
   body('payoutMethod').isIn(['bank_transfer', 'stripe_payout', 'manual']).withMessage('Invalid payout method'),
   body('payoutNotes').optional().isString()
 ], processBulkPayout);
+
+// @route   POST /api/admin/commissions/payout
+// @desc    Process manual payout to agent (Admin only)
+// @access  Private (Admin only)
+router.post('/commissions/payout', authenticateToken, isAdmin, [
+  body('agentId').notEmpty().withMessage('Agent ID is required'),
+  body('amount').isNumeric().withMessage('Amount must be a number'),
+  body('paymentMethod').isIn(['bank_transfer', 'stripe_payout', 'manual', 'paypal']).withMessage('Invalid payment method'),
+  body('notes').optional().isString()
+], processManualPayout);
+
+// @route   GET /api/admin/commissions/payouts
+// @desc    Get payout history (Admin only)
+// @access  Private (Admin only)
+router.get('/commissions/payouts', authenticateToken, isAdmin, getPayoutHistory);
+
+// @route   GET /api/admin/purchases
+// @desc    Get detailed purchase tracking (Admin only)
+// @access  Private (Admin only)
+router.get('/purchases', authenticateToken, isAdmin, getPurchaseTracking);
+
+// @route   GET /api/admin/agents/analytics
+// @desc    Get agent performance analytics (Admin only)
+// @access  Private (Admin only)
+router.get('/agents/analytics', authenticateToken, isAdmin, getAgentAnalytics);
 
 // @route   GET /api/admin/stats/overview
 // @desc    Get comprehensive system statistics (Admin only)

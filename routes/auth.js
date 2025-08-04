@@ -7,7 +7,8 @@ const {
   login,
   getProfile,
   updateProfile,
-  changePassword
+  changePassword,
+  updateBankDetails
 } = require('../controllers/authController');
 
 // @route   POST /api/auth/register
@@ -57,5 +58,17 @@ router.put('/change-password', authenticateToken, [
   body('currentPassword').notEmpty().withMessage('Current password is required'),
   body('newPassword').isLength({ min: 6 }).withMessage('New password must be at least 6 characters')
 ], changePassword);
+
+// @route   PUT /api/auth/bank-details
+// @desc    Update bank details (for agents)
+// @access  Private
+router.put('/bank-details', authenticateToken, [
+  body('accountNumber').notEmpty().withMessage('Account number is required'),
+  body('bankName').notEmpty().withMessage('Bank name is required'),
+  body('accountHolderName').notEmpty().withMessage('Account holder name is required'),
+  body('routingNumber').optional().isString(),
+  body('swiftCode').optional().isString(),
+  body('iban').optional().isString()
+], updateBankDetails);
 
 module.exports = router; 

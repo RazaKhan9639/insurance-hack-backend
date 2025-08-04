@@ -244,10 +244,62 @@ const changePassword = async (req, res) => {
   }
 };
 
+// @desc    Update bank details (for agents)
+// @route   PUT /api/auth/bank-details
+// @access  Private
+const updateBankDetails = async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json(createErrorResponse('Validation failed', 400, errors.array()));
+    }
+
+    const { accountNumber, bankName, routingNumber, accountHolderName, swiftCode, iban } = req.body;
+    const userId = req.user.userId;
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json(createErrorResponse('User not found'));
+    }
+
+    if (user.role !== 'agent') {
+      return res.status(403).json(createErrorResponse('Only agents can update bank details'));
+    }
+
+    // Update bank details
+    user.bankDetails = {
+      accountNumber,
+      bankName,
+      routingNumber,
+      accountHolderName,
+      swiftCode,
+      iban,
+      isVerified: false // Reset verification when details are updated
+    };
+
+    await user.save();
+
+    res.json(createSuccessResponse({ 
+      user: {
+        _id: user._id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        bankDetails: user.bankDetails
+      }
+    }, 'Bank details updated successfully'));
+
+  } catch (error) {
+    console.error('Update bank details error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
 module.exports = {
   register,
   login,
   getProfile,
   updateProfile,
-  changePassword
+  changePassword,
+  updateBankDetails
 }; 

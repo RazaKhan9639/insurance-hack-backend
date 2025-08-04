@@ -44,9 +44,36 @@ router.post(
     body('duration').optional().isString(),
     body('level').optional().isString(),
     body('category').optional().isString(),
-    body('image').optional().isURL().withMessage('Image must be a valid URL'),
-    body('videoUrl').optional().isURL().withMessage('Video URL must be a valid URL'),
-    body('pdfUrl').optional().isURL().withMessage('PDF URL must be a valid URL')
+    body('image').optional().custom((value) => {
+      if (!value || value.trim() === '') return true;
+      try {
+        new URL(value);
+        return true;
+      } catch (error) {
+        console.log('Image URL validation failed:', value, error.message);
+        throw new Error('Image must be a valid URL');
+      }
+    }),
+    body('videoUrl').optional().custom((value) => {
+      if (!value || value.trim() === '') return true;
+      try {
+        new URL(value);
+        return true;
+      } catch (error) {
+        console.log('Video URL validation failed:', value, error.message);
+        throw new Error('Video URL must be a valid URL');
+      }
+    }),
+    body('pdfUrl').optional().custom((value) => {
+      if (!value || value.trim() === '') return true;
+      try {
+        new URL(value);
+        return true;
+      } catch (error) {
+        console.log('PDF URL validation failed:', value, error.message);
+        throw new Error('PDF URL must be a valid URL');
+      }
+    })
     // optional: validate videoUrl or pdfUrl if needed
   ],
   createCourse
@@ -60,7 +87,15 @@ router.put('/:id', authenticateToken, isAdmin, [
   body('description').optional().notEmpty(),
   body('price').optional().isNumeric(),
   body('duration').optional().isString(),
-  body('content').optional().isArray()
+  body('content').optional().isString(),
+  body('image').optional(),
+  body('videoUrl').optional(),
+  body('pdfUrl').optional(),
+  body('requirements').optional().isArray(),
+  body('whatYouWillLearn').optional().isArray(),
+  body('level').optional().isString(),
+  body('category').optional().isString(),
+  body('isActive').optional()
 ], updateCourse);
 
 // @route   DELETE /api/courses/:id

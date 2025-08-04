@@ -28,7 +28,11 @@ const userSchema = new mongoose.Schema({
   bankDetails: {
     accountNumber: String,
     bankName: String,
-    routingNumber: String
+    routingNumber: String,
+    accountHolderName: String,
+    swiftCode: String,
+    iban: String,
+    isVerified: { type: Boolean, default: false }
   },
   coursesEnrolled: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Course' }],
   coursesPurchased: [{ 

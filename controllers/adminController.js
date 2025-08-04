@@ -137,11 +137,55 @@ const getAllUsers = async (req, res) => {
       .skip((page - 1) * limit)
       .exec();
 
+    // Get referral counts and commission totals for agents
+    const usersWithStats = await Promise.all(users.map(async (user) => {
+      const userObj = user.toObject();
+      
+      if (user.role === 'agent') {
+        // Get referral count (users who used this agent's referral code)
+        const referralCount = await User.countDocuments({ 
+          referredBy: user._id 
+        });
+        
+        // Get total commission earned
+        const commissionStats = await Commission.aggregate([
+          { $match: { agent: user._id } },
+          { $group: { 
+            _id: null, 
+            totalCommission: { $sum: '$amount' },
+            pendingCommission: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, '$amount', 0] } },
+            paidCommission: { $sum: { $cond: [{ $eq: ['$status', 'paid'] }, '$amount', 0] } }
+          }}
+        ]);
+        
+        // Get payments made through this agent's referrals
+        const referralPayments = await Payment.aggregate([
+          { $match: { referralAgent: user._id, status: 'completed' } },
+          { $group: { 
+            _id: null, 
+            totalAmount: { $sum: '$amount' },
+            paymentCount: { $sum: 1 }
+          }}
+        ]);
+        
+        userObj.referralStats = {
+          referralCount,
+          totalCommission: commissionStats[0]?.totalCommission || 0,
+          pendingCommission: commissionStats[0]?.pendingCommission || 0,
+          paidCommission: commissionStats[0]?.paidCommission || 0,
+          referralPaymentsAmount: referralPayments[0]?.totalAmount || 0,
+          referralPaymentsCount: referralPayments[0]?.paymentCount || 0
+        };
+      }
+      
+      return userObj;
+    }));
+
     const total = await User.countDocuments(query);
     const pagination = generatePagination(page, limit, total);
 
     res.json(createSuccessResponse({
-      users,
+      users: usersWithStats,
       pagination
     }));
 
@@ -293,28 +337,77 @@ const deleteUser = async (req, res) => {
 // @access  Private (Admin only)
 const getAllPayments = async (req, res) => {
   try {
-    const { page = 1, limit = 10, status, referral } = req.query;
+    const { page = 1, limit = 10, status, referral, agentId, courseId, dateRange } = req.query;
     
     const query = {};
     if (status) query.status = status;
     if (referral === 'true') query.referralAgent = { $exists: true, $ne: null };
     if (referral === 'false') query.referralAgent = { $exists: false };
+    if (agentId) query.referralAgent = agentId;
+    if (courseId) query.course = courseId;
+    
+    // Add date range filter
+    if (dateRange) {
+      const { startDate, endDate } = getDateRange(dateRange);
+      if (startDate && endDate) {
+        query.createdAt = { $gte: startDate, $lte: endDate };
+      }
+    }
 
     const payments = await Payment.find(query)
       .populate('user', 'username email firstName lastName')
-      .populate('course', 'title')
-      .populate('referralAgent', 'username firstName lastName')
+      .populate('course', 'title price')
+      .populate('referralAgent', 'username firstName lastName commissionRate')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .exec();
 
+    // Get commission information for each payment
+    const paymentsWithCommission = await Promise.all(payments.map(async (payment) => {
+      const paymentObj = payment.toObject();
+      
+      if (payment.referralAgent) {
+        // Get commission for this payment
+        const commission = await Commission.findOne({ 
+          payment: payment._id,
+          agent: payment.referralAgent._id 
+        });
+        
+        paymentObj.commission = commission ? {
+          amount: commission.amount,
+          status: commission.status,
+          paidAt: commission.paidAt
+        } : null;
+      }
+      
+      return paymentObj;
+    }));
+
     const total = await Payment.countDocuments(query);
     const pagination = generatePagination(page, limit, total);
 
+    // Get summary stats
+    const summaryStats = await Payment.aggregate([
+      { $match: query },
+      { $group: {
+        _id: null,
+        totalAmount: { $sum: '$amount' },
+        totalPayments: { $sum: 1 },
+        referralPayments: { $sum: { $cond: [{ $ne: ['$referralAgent', null] }, 1, 0] } },
+        referralAmount: { $sum: { $cond: [{ $ne: ['$referralAgent', null] }, '$amount', 0] } }
+      }}
+    ]);
+
     res.json(createSuccessResponse({
-      payments,
-      pagination
+      payments: paymentsWithCommission,
+      pagination,
+      summary: summaryStats[0] || {
+        totalAmount: 0,
+        totalPayments: 0,
+        referralPayments: 0,
+        referralAmount: 0
+      }
     }));
 
   } catch (error) {
@@ -328,16 +421,25 @@ const getAllPayments = async (req, res) => {
 // @access  Private (Admin only)
 const getAllCommissions = async (req, res) => {
   try {
-    const { page = 1, limit = 10, status, agentId } = req.query;
+    const { page = 1, limit = 10, status, agentId, dateRange } = req.query;
     
     const query = {};
     if (status) query.status = status;
     if (agentId) query.agent = agentId;
+    
+    // Add date range filter
+    if (dateRange) {
+      const { startDate, endDate } = getDateRange(dateRange);
+      if (startDate && endDate) {
+        query.createdAt = { $gte: startDate, $lte: endDate };
+      }
+    }
 
     const commissions = await Commission.find(query)
-      .populate('agent', 'username email firstName lastName')
+      .populate('agent', 'username email firstName lastName commissionRate')
       .populate('referral', 'username email firstName lastName')
-      .populate('payment', 'amount transactionId createdAt')
+      .populate('payment', 'amount transactionId createdAt course')
+      .populate('payment.course', 'title')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
@@ -346,9 +448,64 @@ const getAllCommissions = async (req, res) => {
     const total = await Commission.countDocuments(query);
     const pagination = generatePagination(page, limit, total);
 
+    // Get summary stats
+    const summaryStats = await Commission.aggregate([
+      { $match: query },
+      { $group: {
+        _id: null,
+        totalCommission: { $sum: '$amount' },
+        pendingCommission: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, '$amount', 0] } },
+        paidCommission: { $sum: { $cond: [{ $eq: ['$status', 'paid'] }, '$amount', 0] } },
+        totalCommissions: { $sum: 1 },
+        pendingCount: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] } },
+        paidCount: { $sum: { $cond: [{ $eq: ['$status', 'paid'] }, 1, 0] } }
+      }}
+    ]);
+
+    // Get agent-wise summary
+    const agentSummary = await Commission.aggregate([
+      { $match: query },
+      { $group: {
+        _id: '$agent',
+        totalCommission: { $sum: '$amount' },
+        pendingCommission: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, '$amount', 0] } },
+        paidCommission: { $sum: { $cond: [{ $eq: ['$status', 'paid'] }, '$amount', 0] } },
+        commissionCount: { $sum: 1 }
+      }},
+      { $lookup: {
+        from: 'users',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'agent'
+      }},
+      { $unwind: '$agent' },
+      { $project: {
+        agent: {
+          _id: '$agent._id',
+          username: '$agent.username',
+          firstName: '$agent.firstName',
+          lastName: '$agent.lastName',
+          email: '$agent.email'
+        },
+        totalCommission: 1,
+        pendingCommission: 1,
+        paidCommission: 1,
+        commissionCount: 1
+      }}
+    ]);
+
     res.json(createSuccessResponse({
       commissions,
-      pagination
+      pagination,
+      summary: summaryStats[0] || {
+        totalCommission: 0,
+        pendingCommission: 0,
+        paidCommission: 0,
+        totalCommissions: 0,
+        pendingCount: 0,
+        paidCount: 0
+      },
+      agentSummary
     }));
 
   } catch (error) {
@@ -450,6 +607,142 @@ const processBulkPayout = async (req, res) => {
 
   } catch (error) {
     console.error('Bulk payout error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
+// @desc    Process manual payout to agent (Admin only)
+// @route   POST /api/admin/commissions/payout
+// @access  Private (Admin only)
+const processManualPayout = async (req, res) => {
+  try {
+    const { agentId, amount, paymentMethod, notes } = req.body;
+
+    if (!agentId || !amount || !paymentMethod) {
+      return res.status(400).json(createErrorResponse('Agent ID, amount, and payment method are required'));
+    }
+
+    if (!isValidObjectId(agentId)) {
+      return res.status(400).json(createErrorResponse('Invalid agent ID'));
+    }
+
+    // Find the agent
+    const agent = await User.findById(agentId);
+    if (!agent || agent.role !== 'agent') {
+      return res.status(404).json(createErrorResponse('Agent not found'));
+    }
+
+    // Get pending commissions for this agent
+    const pendingCommissions = await Commission.find({
+      agent: agentId,
+      status: 'pending'
+    });
+
+    if (pendingCommissions.length === 0) {
+      return res.status(400).json(createErrorResponse('No pending commissions found for this agent'));
+    }
+
+    const totalPendingAmount = pendingCommissions.reduce((sum, commission) => sum + commission.amount, 0);
+    
+    if (amount > totalPendingAmount) {
+      return res.status(400).json(createErrorResponse(`Amount exceeds pending commission. Maximum payout: £${totalPendingAmount}`));
+    }
+
+    // Update commission status to paid
+    const commissionIds = pendingCommissions.map(c => c._id);
+    await Commission.updateMany(
+      { _id: { $in: commissionIds } },
+      { 
+        status: 'paid',
+        paidAt: new Date(),
+        paymentMethod,
+        adminNotes: notes
+      }
+    );
+
+    // Create payout record
+    const payout = new Commission({
+      agent: agentId,
+      amount: amount,
+      status: 'paid',
+      paymentMethod,
+      adminNotes: notes,
+      paidAt: new Date(),
+      type: 'payout'
+    });
+
+    await payout.save();
+
+    res.json(createSuccessResponse({
+      payout: {
+        id: payout._id,
+        agent: {
+          _id: agent._id,
+          username: agent.username,
+          firstName: agent.firstName,
+          lastName: agent.lastName
+        },
+        amount,
+        paymentMethod,
+        paidAt: payout.paidAt,
+        notes
+      }
+    }, 'Payout processed successfully'));
+
+  } catch (error) {
+    console.error('Process payout error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
+// @desc    Get payout history (Admin only)
+// @route   GET /api/admin/commissions/payouts
+// @access  Private (Admin only)
+const getPayoutHistory = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, agentId, dateRange } = req.query;
+    
+    const query = { type: 'payout' };
+    if (agentId) query.agent = agentId;
+    
+    if (dateRange) {
+      const { startDate, endDate } = getDateRange(dateRange);
+      if (startDate && endDate) {
+        query.paidAt = { $gte: startDate, $lte: endDate };
+      }
+    }
+
+    const payouts = await Commission.find(query)
+      .populate('agent', 'username email firstName lastName')
+      .sort({ paidAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .exec();
+
+    const total = await Commission.countDocuments(query);
+    const pagination = generatePagination(page, limit, total);
+
+    // Get summary stats
+    const summaryStats = await Commission.aggregate([
+      { $match: query },
+      { $group: {
+        _id: null,
+        totalPayouts: { $sum: '$amount' },
+        totalPayoutCount: { $sum: 1 }
+      }}
+    ]);
+
+    res.json(createSuccessResponse({
+      payouts,
+      pagination,
+      summary: summaryStats[0] || {
+        totalPayouts: 0,
+        totalPayoutCount: 0
+      }
+    }));
+
+  } catch (error) {
+    console.error('Get payout history error:', error);
     res.status(500).json(createErrorResponse('Server error', 500));
   }
 };
@@ -666,6 +959,207 @@ const performBulkActions = async (req, res) => {
   }
 };
 
+// @desc    Get detailed purchase tracking (Admin only)
+// @route   GET /api/admin/purchases
+// @access  Private (Admin only)
+const getPurchaseTracking = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, courseId, agentId, dateRange, referral } = req.query;
+    
+    const query = {};
+    if (courseId) query.course = courseId;
+    if (dateRange) {
+      const { startDate, endDate } = getDateRange(dateRange);
+      if (startDate && endDate) {
+        query.createdAt = { $gte: startDate, $lte: endDate };
+      }
+    }
+    if (referral === 'true') query.referralAgent = { $exists: true, $ne: null };
+    if (referral === 'false') query.referralAgent = { $exists: false };
+
+    const purchases = await Payment.find(query)
+      .populate('user', 'username email firstName lastName referredBy')
+      .populate('course', 'title price category')
+      .populate('referralAgent', 'username firstName lastName commissionRate')
+      .populate('user.referredBy', 'username firstName lastName')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .exec();
+
+    // Get commission information for each purchase
+    const purchasesWithCommission = await Promise.all(purchases.map(async (purchase) => {
+      const purchaseObj = purchase.toObject();
+      
+      if (purchase.referralAgent) {
+        const commission = await Commission.findOne({
+          payment: purchase._id,
+          agent: purchase.referralAgent._id
+        });
+        
+        purchaseObj.commission = commission ? {
+          amount: commission.amount,
+          status: commission.status,
+          paidAt: commission.paidAt
+        } : null;
+      }
+      
+      return purchaseObj;
+    }));
+
+    const total = await Payment.countDocuments(query);
+    const pagination = generatePagination(page, limit, total);
+
+    // Get summary stats
+    const summaryStats = await Payment.aggregate([
+      { $match: query },
+      { $group: {
+        _id: null,
+        totalPurchases: { $sum: 1 },
+        totalRevenue: { $sum: '$amount' },
+        referralPurchases: { $sum: { $cond: [{ $ne: ['$referralAgent', null] }, 1, 0] } },
+        referralRevenue: { $sum: { $cond: [{ $ne: ['$referralAgent', null] }, '$amount', 0] } },
+        directPurchases: { $sum: { $cond: [{ $eq: ['$referralAgent', null] }, 1, 0] } },
+        directRevenue: { $sum: { $cond: [{ $eq: ['$referralAgent', null] }, '$amount', 0] } }
+      }}
+    ]);
+
+    // Get course-wise summary
+    const courseSummary = await Payment.aggregate([
+      { $match: query },
+      { $group: {
+        _id: '$course',
+        purchaseCount: { $sum: 1 },
+        totalRevenue: { $sum: '$amount' },
+        referralCount: { $sum: { $cond: [{ $ne: ['$referralAgent', null] }, 1, 0] } }
+      }},
+      { $lookup: {
+        from: 'courses',
+        localField: '_id',
+        foreignField: '_id',
+        as: 'course'
+      }},
+      { $unwind: '$course' },
+      { $project: {
+        course: {
+          _id: '$course._id',
+          title: '$course.title',
+          price: '$course.price'
+        },
+        purchaseCount: 1,
+        totalRevenue: 1,
+        referralCount: 1
+      }}
+    ]);
+
+    res.json(createSuccessResponse({
+      purchases: purchasesWithCommission,
+      pagination,
+      summary: summaryStats[0] || {
+        totalPurchases: 0,
+        totalRevenue: 0,
+        referralPurchases: 0,
+        referralRevenue: 0,
+        directPurchases: 0,
+        directRevenue: 0
+      },
+      courseSummary
+    }));
+
+  } catch (error) {
+    console.error('Get purchase tracking error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
+// @desc    Get agent performance analytics (Admin only)
+// @route   GET /api/admin/agents/analytics
+// @access  Private (Admin only)
+const getAgentAnalytics = async (req, res) => {
+  try {
+    const { agentId, dateRange } = req.query;
+    
+    const query = { role: 'agent' };
+    if (agentId) query._id = agentId;
+
+    const agents = await User.find(query)
+      .select('username email firstName lastName commissionRate isActiveAgent createdAt');
+
+    const agentAnalytics = await Promise.all(agents.map(async (agent) => {
+      // Get referrals count
+      const referralCount = await User.countDocuments({ referredBy: agent._id });
+      
+      // Get payments through referrals
+      const referralPayments = await Payment.aggregate([
+        { $match: { referralAgent: agent._id, status: 'completed' } },
+        { $group: {
+          _id: null,
+          totalAmount: { $sum: '$amount' },
+          paymentCount: { $sum: 1 }
+        }}
+      ]);
+
+      // Get commission stats
+      const commissionStats = await Commission.aggregate([
+        { $match: { agent: agent._id } },
+        { $group: {
+          _id: null,
+          totalCommission: { $sum: '$amount' },
+          pendingCommission: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, '$amount', 0] } },
+          paidCommission: { $sum: { $cond: [{ $eq: ['$status', 'paid'] }, '$amount', 0] } },
+          commissionCount: { $sum: 1 }
+        }}
+      ]);
+
+      // Get monthly performance
+      const monthlyPerformance = await Payment.aggregate([
+        { $match: { referralAgent: agent._id, status: 'completed' } },
+        { $group: {
+          _id: {
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' }
+          },
+          amount: { $sum: '$amount' },
+          count: { $sum: 1 }
+        }},
+        { $sort: { '_id.year': -1, '_id.month': -1 } },
+        { $limit: 12 }
+      ]);
+
+      return {
+        agent: {
+          _id: agent._id,
+          username: agent.username,
+          firstName: agent.firstName,
+          lastName: agent.lastName,
+          email: agent.email,
+          commissionRate: agent.commissionRate,
+          isActiveAgent: agent.isActiveAgent,
+          createdAt: agent.createdAt
+        },
+        analytics: {
+          referralCount,
+          totalReferralAmount: referralPayments[0]?.totalAmount || 0,
+          referralPaymentCount: referralPayments[0]?.paymentCount || 0,
+          totalCommission: commissionStats[0]?.totalCommission || 0,
+          pendingCommission: commissionStats[0]?.pendingCommission || 0,
+          paidCommission: commissionStats[0]?.paidCommission || 0,
+          commissionCount: commissionStats[0]?.commissionCount || 0,
+          monthlyPerformance
+        }
+      };
+    }));
+
+    res.json(createSuccessResponse({
+      agents: agentAnalytics
+    }));
+
+  } catch (error) {
+    console.error('Get agent analytics error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
 module.exports = {
   getAdminDashboard,
   getAllUsers,
@@ -676,6 +1170,10 @@ module.exports = {
   getAllCommissions,
   updateCommissionStatus,
   processBulkPayout,
+  processManualPayout,
+  getPayoutHistory,
   getSystemStats,
-  performBulkActions
+  performBulkActions,
+  getPurchaseTracking,
+  getAgentAnalytics
 }; 
