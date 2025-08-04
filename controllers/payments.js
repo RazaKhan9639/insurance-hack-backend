@@ -220,6 +220,12 @@ const handleWebhook = async (req, res) => {
             await commission.save();
             console.log('Commission record created:', commission._id);
           
+            // Update payment record with commission info
+            payment.commissionAmount = commissionAmount;
+            payment.referralAgent = user.referredBy;
+            await payment.save();
+            console.log('Payment updated with commission info');
+          
             await User.findByIdAndUpdate(user.referredBy, {
               $inc: {
                 totalCommission: commissionAmount,

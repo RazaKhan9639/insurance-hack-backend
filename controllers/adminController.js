@@ -132,6 +132,7 @@ const getAllUsers = async (req, res) => {
     const users = await User.find(query)
       .select('-password')
       .populate('coursesPurchased.courseId', 'title')
+      .populate('referredBy', 'username firstName lastName')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)

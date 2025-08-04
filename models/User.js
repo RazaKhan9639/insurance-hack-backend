@@ -40,7 +40,11 @@ const userSchema = new mongoose.Schema({
     purchasedAt: { type: Date, default: Date.now },
     accessExpires: Date 
   }],
-  cart: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Course' }]
+  cart: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Course' }],
+  // Referral tracking
+  totalReferrals: { type: Number, default: 0 },
+  totalCommission: { type: Number, default: 0 },
+  referrals: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
 }, { timestamps: true });
 
 // Hash password and generate referral code before saving
