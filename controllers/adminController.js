@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Course = require('../models/Course');
 const Payment = require('../models/Payment');
 const Commission = require('../models/Commission');
+const Payout = require('../models/Payout');
 const PayoutRequest = require('../models/PayoutRequest');
 const { 
   generatePagination,
@@ -425,7 +426,7 @@ const getAllCommissions = async (req, res) => {
   try {
     const { page = 1, limit = 10, status, agentId, dateRange } = req.query;
     
-    const query = {};
+    const query = {}; // All commission records (payouts are now in separate collection)
     if (status) query.status = status;
     if (agentId) query.agent = agentId;
     
@@ -660,30 +661,53 @@ const processManualPayout = async (req, res) => {
       return res.status(400).json(createErrorResponse(`Amount exceeds pending commission. Maximum payout: £${totalPendingAmount}`));
     }
 
-    // Update commission status to paid
-    const commissionIds = pendingCommissions.map(c => c._id);
+    // Calculate how many commissions we can pay with this amount
+    let remainingAmount = amount;
+    const commissionsToPay = [];
+    let totalCommissionsPaid = 0;
+
+    for (const commission of pendingCommissions) {
+      if (remainingAmount >= commission.amount) {
+        commissionsToPay.push(commission._id);
+        remainingAmount -= commission.amount;
+        totalCommissionsPaid += commission.amount;
+      } else {
+        break;
+      }
+    }
+
+    // Update commission status to paid and link to payout
     await Commission.updateMany(
-      { _id: { $in: commissionIds } },
+      { _id: { $in: commissionsToPay } },
       { 
         status: 'paid',
         paidAt: new Date(),
-        paymentMethod,
         adminNotes: notes
       }
     );
 
     // Create payout record
-    const payout = new Commission({
+    const payout = new Payout({
       agent: agentId,
-      amount: amount,
-      status: 'paid',
+      amount: totalCommissionsPaid,
+      status: 'completed',
       paymentMethod,
+      notes: notes,
       adminNotes: notes,
-      paidAt: new Date(),
-      type: 'payout'
+      processedBy: req.user._id,
+      processedAt: new Date(),
+      completedAt: new Date(),
+      commissionIds: commissionsToPay,
+      totalCommissionsPaid: totalCommissionsPaid
     });
 
     await payout.save();
+
+    // Update commissions with payout reference
+    await Commission.updateMany(
+      { _id: { $in: commissionsToPay } },
+      { payoutId: payout._id }
+    );
 
     res.json(createSuccessResponse({
       payout: {
@@ -826,28 +850,33 @@ const getPayoutHistory = async (req, res) => {
   try {
     const { page = 1, limit = 10, agentId, dateRange } = req.query;
     
-    const query = { type: 'payout' };
+    const query = {};
     if (agentId) query.agent = agentId;
     
     if (dateRange) {
       const { startDate, endDate } = getDateRange(dateRange);
       if (startDate && endDate) {
-        query.paidAt = { $gte: startDate, $lte: endDate };
+        query.completedAt = { $gte: startDate, $lte: endDate };
       }
     }
 
-    const payouts = await Commission.find(query)
+    const payouts = await Payout.find(query)
       .populate('agent', 'username email firstName lastName')
-      .sort({ paidAt: -1 })
+      .populate('processedBy', 'username firstName lastName')
+      .populate('commissionIds', 'amount originalAmount referral payment')
+      .populate('commissionIds.referral', 'username firstName lastName')
+      .populate('commissionIds.payment', 'amount course')
+      .populate('commissionIds.payment.course', 'title')
+      .sort({ completedAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
       .exec();
 
-    const total = await Commission.countDocuments(query);
+    const total = await Payout.countDocuments(query);
     const pagination = generatePagination(page, limit, total);
 
     // Get summary stats
-    const summaryStats = await Commission.aggregate([
+    const summaryStats = await Payout.aggregate([
       { $match: query },
       { $group: {
         _id: null,
