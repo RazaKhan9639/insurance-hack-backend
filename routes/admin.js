@@ -17,7 +17,12 @@ const {
   getSystemStats,
   performBulkActions,
   getPurchaseTracking,
-  getAgentAnalytics
+  getAgentAnalytics,
+  getAllPayoutRequests,
+  processPayoutRequest,
+  createPayoutRequest,
+  verifyAgentBankDetails,
+  processBankTransfer
 } = require('../controllers/adminController');
 
 // @route   GET /api/admin/dashboard
@@ -115,5 +120,47 @@ router.post('/bulk-actions', authenticateToken, isAdmin, [
   body('ids').isArray().withMessage('IDs must be an array'),
   body('data').optional()
 ], performBulkActions);
+
+// @route   GET /api/admin/payout-requests
+// @desc    Get all payout requests (Admin only)
+// @access  Private (Admin only)
+router.get('/payout-requests', authenticateToken, isAdmin, getAllPayoutRequests);
+
+// @route   PUT /api/admin/payout-requests/:id/process
+// @desc    Process payout request (Admin only)
+// @access  Private (Admin only)
+router.put('/payout-requests/:id/process', authenticateToken, isAdmin, [
+  body('status').isIn(['pending', 'approved', 'rejected', 'completed']).withMessage('Invalid status'),
+  body('adminNotes').optional().isString(),
+  body('payoutReference').optional().isString(),
+  body('rejectionReason').optional().isString()
+], processPayoutRequest);
+
+// @route   PUT /api/admin/users/:id/verify-bank-details
+// @desc    Verify agent bank details (Admin only)
+// @access  Private (Admin only)
+router.put('/users/:id/verify-bank-details', authenticateToken, isAdmin, [
+  body('isVerified').isBoolean().withMessage('isVerified must be a boolean'),
+  body('verificationNotes').optional().isString()
+], verifyAgentBankDetails);
+
+// @route   POST /api/admin/payout-requests
+// @desc    Create payout request (Agent only)
+// @access  Private (Agent only)
+router.post('/payout-requests', authenticateToken, [
+  body('amount').isNumeric().withMessage('Amount must be a number'),
+  body('notes').optional().isString(),
+  body('commissionIds').optional().isArray().withMessage('Commission IDs must be an array')
+], createPayoutRequest);
+
+// @route   POST /api/admin/commissions/bank-transfer
+// @desc    Process bank transfer to agent (Admin only)
+// @access  Private (Admin only)
+router.post('/commissions/bank-transfer', authenticateToken, isAdmin, [
+  body('agentId').isMongoId().withMessage('Valid agent ID is required'),
+  body('amount').isNumeric().withMessage('Amount must be a number'),
+  body('notes').optional().isString(),
+  body('transferReference').optional().isString()
+], processBankTransfer);
 
 module.exports = router; 

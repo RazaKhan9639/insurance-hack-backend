@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Course = require('../models/Course');
 const Payment = require('../models/Payment');
 const Commission = require('../models/Commission');
+const PayoutRequest = require('../models/PayoutRequest');
 const { 
   generatePagination,
   createErrorResponse,
@@ -633,6 +634,16 @@ const processManualPayout = async (req, res) => {
       return res.status(404).json(createErrorResponse('Agent not found'));
     }
 
+    // Check if agent has bank details
+    if (!agent.bankDetails || !agent.bankDetails.accountNumber || !agent.bankDetails.bankName) {
+      return res.status(400).json(createErrorResponse('Agent has not provided bank details yet'));
+    }
+
+    // Check if bank details are verified (for bank transfers)
+    if (paymentMethod === 'bank_transfer' && !agent.bankDetails.isVerified) {
+      return res.status(400).json(createErrorResponse('Agent bank details must be verified before processing bank transfer'));
+    }
+
     // Get pending commissions for this agent
     const pendingCommissions = await Commission.find({
       agent: agentId,
@@ -681,7 +692,14 @@ const processManualPayout = async (req, res) => {
           _id: agent._id,
           username: agent.username,
           firstName: agent.firstName,
-          lastName: agent.lastName
+          lastName: agent.lastName,
+          bankDetails: {
+            accountNumber: agent.bankDetails.accountNumber,
+            bankName: agent.bankDetails.bankName,
+            accountHolderName: agent.bankDetails.accountHolderName,
+            routingNumber: agent.bankDetails.routingNumber,
+            isVerified: agent.bankDetails.isVerified
+          }
         },
         amount,
         paymentMethod,
@@ -692,6 +710,111 @@ const processManualPayout = async (req, res) => {
 
   } catch (error) {
     console.error('Process payout error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
+// @desc    Process bank transfer to agent (Admin only)
+// @route   POST /api/admin/commissions/bank-transfer
+// @access  Private (Admin only)
+const processBankTransfer = async (req, res) => {
+  try {
+    const { agentId, amount, notes, transferReference } = req.body;
+
+    if (!agentId || !amount) {
+      return res.status(400).json(createErrorResponse('Agent ID and amount are required'));
+    }
+
+    if (!isValidObjectId(agentId)) {
+      return res.status(400).json(createErrorResponse('Invalid agent ID'));
+    }
+
+    // Find the agent
+    const agent = await User.findById(agentId);
+    if (!agent || agent.role !== 'agent') {
+      return res.status(404).json(createErrorResponse('Agent not found'));
+    }
+
+    // Check if agent has bank details
+    if (!agent.bankDetails || !agent.bankDetails.accountNumber || !agent.bankDetails.bankName) {
+      return res.status(400).json(createErrorResponse('Agent has not provided bank details yet'));
+    }
+
+    // Check if bank details are verified
+    if (!agent.bankDetails.isVerified) {
+      return res.status(400).json(createErrorResponse('Agent bank details must be verified before processing bank transfer'));
+    }
+
+    // Get pending commissions for this agent
+    const pendingCommissions = await Commission.find({
+      agent: agentId,
+      status: 'pending'
+    });
+
+    if (pendingCommissions.length === 0) {
+      return res.status(400).json(createErrorResponse('No pending commissions found for this agent'));
+    }
+
+    const totalPendingAmount = pendingCommissions.reduce((sum, commission) => sum + commission.amount, 0);
+    
+    if (amount > totalPendingAmount) {
+      return res.status(400).json(createErrorResponse(`Amount exceeds pending commission. Maximum payout: £${totalPendingAmount}`));
+    }
+
+    // Update commission status to paid
+    const commissionIds = pendingCommissions.map(c => c._id);
+    await Commission.updateMany(
+      { _id: { $in: commissionIds } },
+      { 
+        status: 'paid',
+        paidAt: new Date(),
+        paymentMethod: 'bank_transfer',
+        adminNotes: notes,
+        transferReference
+      }
+    );
+
+    // Create payout record
+    const payout = new Commission({
+      agent: agentId,
+      amount: amount,
+      status: 'paid',
+      paymentMethod: 'bank_transfer',
+      adminNotes: notes,
+      transferReference,
+      paidAt: new Date(),
+      type: 'payout'
+    });
+
+    await payout.save();
+
+    res.json(createSuccessResponse({
+      payout: {
+        id: payout._id,
+        agent: {
+          _id: agent._id,
+          username: agent.username,
+          firstName: agent.firstName,
+          lastName: agent.lastName,
+          bankDetails: {
+            accountNumber: agent.bankDetails.accountNumber,
+            bankName: agent.bankDetails.bankName,
+            accountHolderName: agent.bankDetails.accountHolderName,
+            routingNumber: agent.bankDetails.routingNumber,
+            swiftCode: agent.bankDetails.swiftCode,
+            iban: agent.bankDetails.iban
+          }
+        },
+        amount,
+        paymentMethod: 'bank_transfer',
+        paidAt: payout.paidAt,
+        notes,
+        transferReference
+      }
+    }, 'Bank transfer processed successfully'));
+
+  } catch (error) {
+    console.error('Process bank transfer error:', error);
     res.status(500).json(createErrorResponse('Server error', 500));
   }
 };
@@ -1161,6 +1284,233 @@ const getAgentAnalytics = async (req, res) => {
   }
 };
 
+// @desc    Get all payout requests (Admin only)
+// @route   GET /api/admin/payout-requests
+// @access  Private (Admin only)
+const getAllPayoutRequests = async (req, res) => {
+  try {
+    const { page = 1, limit = 10, status, agentId, dateRange } = req.query;
+    
+    const query = {};
+    if (status) query.status = status;
+    if (agentId) query.agent = agentId;
+    
+    // Add date range filter
+    if (dateRange) {
+      const { startDate, endDate } = getDateRange(dateRange);
+      if (startDate && endDate) {
+        query.requestDate = { $gte: startDate, $lte: endDate };
+      }
+    }
+
+    const payoutRequests = await PayoutRequest.find(query)
+      .populate('agent', 'username email firstName lastName commissionRate bankDetails')
+      .populate('processedBy', 'username firstName lastName')
+      .populate('commissionIds', 'amount status payment')
+      .sort({ requestDate: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit)
+      .exec();
+
+    const total = await PayoutRequest.countDocuments(query);
+    const pagination = generatePagination(page, limit, total);
+
+    // Get summary stats
+    const summaryStats = await PayoutRequest.aggregate([
+      { $match: query },
+      { $group: {
+        _id: null,
+        totalAmount: { $sum: '$amount' },
+        pendingAmount: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, '$amount', 0] } },
+        approvedAmount: { $sum: { $cond: [{ $eq: ['$status', 'approved'] }, '$amount', 0] } },
+        completedAmount: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, '$amount', 0] } },
+        totalRequests: { $sum: 1 },
+        pendingCount: { $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] } },
+        approvedCount: { $sum: { $cond: [{ $eq: ['$status', 'approved'] }, 1, 0] } },
+        completedCount: { $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] } }
+      }}
+    ]);
+
+    res.json(createSuccessResponse({
+      payoutRequests,
+      pagination,
+      summary: summaryStats[0] || {
+        totalAmount: 0,
+        pendingAmount: 0,
+        approvedAmount: 0,
+        completedAmount: 0,
+        totalRequests: 0,
+        pendingCount: 0,
+        approvedCount: 0,
+        completedCount: 0
+      }
+    }));
+
+  } catch (error) {
+    console.error('Get payout requests error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
+// @desc    Process payout request (Admin only)
+// @route   PUT /api/admin/payout-requests/:id/process
+// @access  Private (Admin only)
+const processPayoutRequest = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, adminNotes, payoutReference, rejectionReason } = req.body;
+
+    const payoutRequest = await PayoutRequest.findById(id)
+      .populate('agent', 'username email firstName lastName bankDetails')
+      .populate('commissionIds', 'amount status');
+
+    if (!payoutRequest) {
+      return res.status(404).json(createErrorResponse('Payout request not found', 404));
+    }
+
+    // Check if agent has bank details
+    if (status === 'approved' || status === 'completed') {
+      if (!payoutRequest.agent.bankDetails || 
+          !payoutRequest.agent.bankDetails.accountNumber || 
+          !payoutRequest.agent.bankDetails.bankName) {
+        return res.status(400).json(createErrorResponse('Agent has not provided bank details yet', 400));
+      }
+    }
+
+    // Update payout request
+    payoutRequest.status = status;
+    payoutRequest.processedBy = req.user._id;
+    payoutRequest.processedDate = new Date();
+    payoutRequest.adminNotes = adminNotes;
+    payoutRequest.payoutReference = payoutReference;
+    payoutRequest.rejectionReason = rejectionReason;
+
+    if (status === 'completed') {
+      // Update commission statuses to paid
+      await Commission.updateMany(
+        { _id: { $in: payoutRequest.commissionIds } },
+        { 
+          status: 'paid', 
+          paidAt: new Date(),
+          payoutMethod: 'bank_transfer',
+          payoutReference: payoutReference,
+          adminNotes: adminNotes,
+          processedBy: req.user._id,
+          processedAt: new Date()
+        }
+      );
+    }
+
+    await payoutRequest.save();
+
+    res.json(createSuccessResponse({
+      payoutRequest,
+      message: `Payout request ${status} successfully`
+    }));
+
+  } catch (error) {
+    console.error('Process payout request error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
+// @desc    Verify agent bank details (Admin only)
+// @route   PUT /api/admin/users/:id/verify-bank-details
+// @access  Private (Admin only)
+const verifyAgentBankDetails = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { isVerified, verificationNotes } = req.body;
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json(createErrorResponse('User not found', 404));
+    }
+
+    if (user.role !== 'agent') {
+      return res.status(400).json(createErrorResponse('Only agents can have bank details verified', 400));
+    }
+
+    if (!user.bankDetails || !user.bankDetails.accountNumber || !user.bankDetails.bankName) {
+      return res.status(400).json(createErrorResponse('Agent has not provided bank details yet', 400));
+    }
+
+    // Update bank details verification status
+    user.bankDetails.isVerified = isVerified;
+    user.bankDetails.verificationNotes = verificationNotes;
+    user.bankDetails.verifiedAt = new Date();
+    user.bankDetails.verifiedBy = req.user._id;
+
+    await user.save();
+
+    res.json(createSuccessResponse({
+      user: {
+        _id: user._id,
+        username: user.username,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        role: user.role,
+        bankDetails: user.bankDetails
+      }
+    }, `Bank details ${isVerified ? 'verified' : 'unverified'} successfully`));
+
+  } catch (error) {
+    console.error('Verify bank details error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
+// @desc    Create payout request (Agent only)
+// @route   POST /api/admin/payout-requests
+// @access  Private (Agent only)
+const createPayoutRequest = async (req, res) => {
+  try {
+    const { amount, notes, commissionIds } = req.body;
+    const agentId = req.user._id;
+
+    // Check if agent has bank details
+    const agent = await User.findById(agentId);
+    if (!agent.bankDetails || 
+        !agent.bankDetails.accountNumber || 
+        !agent.bankDetails.bankName) {
+      return res.status(400).json(createErrorResponse('Please add your bank details before requesting a payout', 400));
+    }
+
+    // Validate commission IDs belong to this agent
+    if (commissionIds && commissionIds.length > 0) {
+      const commissions = await Commission.find({
+        _id: { $in: commissionIds },
+        agent: agentId,
+        status: 'pending'
+      });
+
+      if (commissions.length !== commissionIds.length) {
+        return res.status(400).json(createErrorResponse('Invalid commission IDs or commissions already paid', 400));
+      }
+    }
+
+    const payoutRequest = new PayoutRequest({
+      agent: agentId,
+      amount,
+      notes,
+      commissionIds: commissionIds || [],
+      bankDetails: agent.bankDetails
+    });
+
+    await payoutRequest.save();
+
+    res.json(createSuccessResponse({
+      payoutRequest,
+      message: 'Payout request created successfully'
+    }));
+
+  } catch (error) {
+    console.error('Create payout request error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
 module.exports = {
   getAdminDashboard,
   getAllUsers,
@@ -1176,5 +1526,10 @@ module.exports = {
   getSystemStats,
   performBulkActions,
   getPurchaseTracking,
-  getAgentAnalytics
+  getAgentAnalytics,
+  getAllPayoutRequests,
+  processPayoutRequest,
+  createPayoutRequest,
+  verifyAgentBankDetails,
+  processBankTransfer
 }; 

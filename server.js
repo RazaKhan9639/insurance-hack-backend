@@ -45,7 +45,7 @@ app.use((req, res, next) => {
 // General rate limiting
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // limit each IP to 1000 requests per windowMs
+  max: process.env.NODE_ENV === 'development' ? 10000 : 1000, // Higher limit for development
   message: {
     success: false,
     message: 'Too many requests from this IP, please try again later.'
@@ -55,16 +55,18 @@ const generalLimiter = rateLimit({
 // More lenient rate limiting for admin endpoints
 const adminLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 2000, // limit each IP to 2000 requests per windowMs for admin
+  max: process.env.NODE_ENV === 'development' ? 20000 : 2000, // Higher limit for development
   message: {
     success: false,
     message: 'Too many admin requests from this IP, please try again later.'
   }
 });
 
-// Apply rate limiting
-app.use('/api', generalLimiter);
-app.use('/api/admin', adminLimiter);
+// Apply rate limiting (disabled for development)
+if (process.env.NODE_ENV === 'production') {
+  app.use('/api', generalLimiter);
+  app.use('/api/admin', adminLimiter);
+}
 
 // Logging
 if (process.env.NODE_ENV === 'development') {

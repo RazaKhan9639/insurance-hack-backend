@@ -32,7 +32,10 @@ const userSchema = new mongoose.Schema({
     accountHolderName: String,
     swiftCode: String,
     iban: String,
-    isVerified: { type: Boolean, default: false }
+    isVerified: { type: Boolean, default: false },
+    verificationNotes: String,
+    verifiedAt: Date,
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
   coursesEnrolled: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Course' }],
   coursesPurchased: [{ 

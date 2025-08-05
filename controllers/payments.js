@@ -155,6 +155,50 @@ const handleWebhook = async (req, res) => {
       await payment.save();
       console.log('Payment record created:', payment._id);
 
+      // Create commission automatically if there's a referral agent
+      if (user.referredBy) {
+        try {
+          console.log('Creating commission for referral agent:', user.referredBy);
+          
+          // Find the referral agent
+          const referralAgent = await User.findById(user.referredBy);
+          
+          if (referralAgent && referralAgent.role === 'agent') {
+            // Calculate commission amount
+            const commissionAmount = (payment.amount * referralAgent.commissionRate / 100);
+            
+            console.log('Commission calculation:', {
+              paymentAmount: payment.amount,
+              commissionRate: referralAgent.commissionRate,
+              commissionAmount: commissionAmount
+            });
+
+            // Create commission record
+            const commission = new Commission({
+              agent: user.referredBy,
+              referral: userId,
+              payment: payment._id,
+              amount: commissionAmount,
+              status: 'pending', // Start as pending until admin pays out
+              commissionRate: referralAgent.commissionRate / 100,
+              originalAmount: payment.amount,
+              type: 'commission'
+            });
+
+            await commission.save();
+            console.log('Commission created:', commission._id);
+
+            // Update payment with commission status
+            payment.commissionStatus = 'pending';
+            await payment.save();
+            console.log('Payment updated with commission status');
+          }
+        } catch (commissionError) {
+          console.error('Error creating commission:', commissionError);
+          // Don't fail the payment if commission creation fails
+        }
+      }
+
       // Add course to purchased courses (separate from enrolled)
       const purchaseRecord = {
         courseId: courseId,
@@ -597,6 +641,50 @@ const manualPaymentConfirm = async (req, res) => {
     });
 
     await payment.save();
+
+    // Create commission automatically if there's a referral agent
+    if (user.referredBy) {
+      try {
+        console.log('Creating commission for referral agent:', user.referredBy);
+        
+        // Find the referral agent
+        const referralAgent = await User.findById(user.referredBy);
+        
+        if (referralAgent && referralAgent.role === 'agent') {
+          // Calculate commission amount
+          const commissionAmount = (payment.amount * referralAgent.commissionRate / 100);
+          
+          console.log('Commission calculation:', {
+            paymentAmount: payment.amount,
+            commissionRate: referralAgent.commissionRate,
+            commissionAmount: commissionAmount
+          });
+
+          // Create commission record
+          const commission = new Commission({
+            agent: user.referredBy,
+            referral: userId,
+            payment: payment._id,
+            amount: commissionAmount,
+            status: 'pending', // Start as pending until admin pays out
+            commissionRate: referralAgent.commissionRate / 100,
+            originalAmount: payment.amount,
+            type: 'commission'
+          });
+
+          await commission.save();
+          console.log('Commission created:', commission._id);
+
+          // Update payment with commission status
+          payment.commissionStatus = 'pending';
+          await payment.save();
+          console.log('Payment updated with commission status');
+        }
+      } catch (commissionError) {
+        console.error('Error creating commission:', commissionError);
+        // Don't fail the payment if commission creation fails
+      }
+    }
 
     // Add course to purchased courses
     const purchaseRecord = {
