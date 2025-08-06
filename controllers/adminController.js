@@ -204,22 +204,13 @@ const getAllUsers = async (req, res) => {
 // @access  Private (Admin only)
 const updateUserRole = async (req, res) => {
   try {
-    console.log('Update user role request:', {
-      body: req.body,
-      params: req.params,
-      user: req.user
-    });
-
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log('Validation errors:', errors.array());
       return res.status(400).json(createErrorResponse('Validation failed', 400, errors.array()));
     }
 
     const { role, commissionRate, isActiveAgent } = req.body;
     const { id } = req.params;
-
-    console.log('Processing update with:', { role, commissionRate, isActiveAgent, id });
 
     if (!isValidObjectId(id)) {
       return res.status(400).json(createErrorResponse('Invalid user ID'));
@@ -241,8 +232,6 @@ const updateUserRole = async (req, res) => {
       updateData.isActiveAgent = Boolean(isActiveAgent);
     }
 
-    console.log('Final update data:', updateData);
-
     const user = await User.findByIdAndUpdate(
       id,
       updateData,
@@ -252,8 +241,6 @@ const updateUserRole = async (req, res) => {
     if (!user) {
       return res.status(404).json(createErrorResponse('User not found', 404));
     }
-
-    console.log('User updated successfully:', user);
 
     res.json(createSuccessResponse({ user }, 'User updated successfully'));
 

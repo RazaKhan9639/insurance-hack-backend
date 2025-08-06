@@ -18,7 +18,6 @@ const { sendCourseAccessEmail, sendCoursePurchaseEmail } = require('../services/
 // @route   POST /api/payments/test-webhook
 // @access  Public
 const testWebhook = async (req, res) => {
-  console.log('Test webhook called');
   res.json({ message: 'Webhook test successful' });
 };
 
@@ -74,10 +73,6 @@ const createPaymentIntent = async (req, res) => {
 // @route   POST /api/payments/webhook
 // @access  Public
 const handleWebhook = async (req, res) => {
-  console.log('=== WEBHOOK RECEIVED ===');
-  console.log('Headers:', req.headers);
-  console.log('Body length:', req.body?.length);
-  
   const sig = req.headers['stripe-signature'];
   let event;
 
@@ -92,20 +87,16 @@ const handleWebhook = async (req, res) => {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  console.log('Received webhook event:', event.type);
-
   // Handle the payment_intent.succeeded event
   if (event.type === 'payment_intent.succeeded') {
     const paymentIntent = event.data.object;
     
     try {
-      console.log('Processing successful payment:', paymentIntent.id);
       
       // Extract metadata
       const { userId, courseId } = paymentIntent.metadata;
       
       if (!userId || !courseId) {
-        console.error('Missing metadata in payment intent:', paymentIntent.metadata);
         return res.status(400).json({ error: 'Missing metadata' });
       }
       
@@ -135,11 +126,8 @@ const handleWebhook = async (req, res) => {
 
       // Check if user already purchased this course
       if (user.coursesEnrolled.includes(courseId)) {
-        console.log('User already enrolled in course:', userId, courseId);
         return res.status(200).json({ received: true });
       }
-
-      console.log('Creating payment record for user:', userId, 'course:', courseId);
 
       // Create payment record
       const payment = new Payment({
@@ -153,12 +141,10 @@ const handleWebhook = async (req, res) => {
       });
 
       await payment.save();
-      console.log('Payment record created:', payment._id);
 
       // Create commission automatically if there's a referral agent
       if (user.referredBy) {
         try {
-          console.log('Creating commission for referral agent:', user.referredBy);
           
           // Find the referral agent
           const referralAgent = await User.findById(user.referredBy);
@@ -166,12 +152,6 @@ const handleWebhook = async (req, res) => {
           if (referralAgent && referralAgent.role === 'agent') {
             // Calculate commission amount
             const commissionAmount = (payment.amount * referralAgent.commissionRate / 100);
-            
-            console.log('Commission calculation:', {
-              paymentAmount: payment.amount,
-              commissionRate: referralAgent.commissionRate,
-              commissionAmount: commissionAmount
-            });
 
             // Create commission record
             const commission = new Commission({
@@ -186,15 +166,12 @@ const handleWebhook = async (req, res) => {
             });
 
             await commission.save();
-            console.log('Commission created:', commission._id);
 
             // Update payment with commission status
             payment.commissionStatus = 'pending';
             await payment.save();
-            console.log('Payment updated with commission status');
           }
         } catch (commissionError) {
-          console.error('Error creating commission:', commissionError);
           // Don't fail the payment if commission creation fails
         }
       }
@@ -211,28 +188,16 @@ const handleWebhook = async (req, res) => {
         purchase.courseId.toString() === courseId
       );
 
-      console.log('User coursesPurchased before:', user.coursesPurchased);
-      console.log('Already purchased check:', alreadyPurchased);
-
       if (!alreadyPurchased) {
         user.coursesPurchased.push(purchaseRecord);
-        console.log('Course added to purchased courses:', courseId);
       }
 
       // Enroll user in course (for immediate access)
       if (!user.coursesEnrolled.includes(courseId)) {
         user.coursesEnrolled.push(courseId);
-        console.log('User enrolled in course:', userId, courseId);
       }
 
-      console.log('User coursesEnrolled before save:', user.coursesEnrolled);
-      console.log('User coursesPurchased before save:', user.coursesPurchased);
-
       await user.save();
-
-      console.log('User saved successfully. Updated user data:');
-      console.log('- coursesEnrolled:', user.coursesEnrolled);
-      console.log('- coursesPurchased:', user.coursesPurchased);
 
       // Generate PDF receipt and send purchase confirmation email
       try {
