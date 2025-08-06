@@ -13,6 +13,10 @@ const CommissionSchema = new mongoose.Schema({
   // Payout tracking
   payoutId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payout' }, // Reference to payout that paid this commission
   adminNotes: { type: String }, // Admin notes for this commission
+  // Payment method tracking
+  paymentMethod: { type: String, enum: ['bank_transfer', 'stripe_payout', 'manual', 'paypal'], default: 'manual' },
+  transferReference: String, // Reference number for the transfer
+  stripePayoutId: String, // Stripe payout ID if using Stripe
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now }
 });

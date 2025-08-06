@@ -22,7 +22,8 @@ const {
   processPayoutRequest,
   createPayoutRequest,
   verifyAgentBankDetails,
-  processBankTransfer
+  processBankTransfer,
+  processStripePayout
 } = require('../controllers/adminController');
 
 // @route   GET /api/admin/dashboard
@@ -162,5 +163,15 @@ router.post('/commissions/bank-transfer', authenticateToken, isAdmin, [
   body('notes').optional().isString(),
   body('transferReference').optional().isString()
 ], processBankTransfer);
+
+// @route   POST /api/admin/commissions/stripe-payout
+// @desc    Process Stripe payout to agent (Admin only)
+// @access  Private (Admin only)
+router.post('/commissions/stripe-payout', authenticateToken, isAdmin, [
+  body('agentId').isMongoId().withMessage('Valid agent ID is required'),
+  body('amount').isNumeric().withMessage('Amount must be a number'),
+  body('notes').optional().isString(),
+  body('transferReference').optional().isString()
+], processStripePayout);
 
 module.exports = router; 

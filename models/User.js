@@ -37,6 +37,9 @@ const userSchema = new mongoose.Schema({
     verifiedAt: Date,
     verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   },
+  // Stripe Connect account for payouts
+  stripeAccountId: String,
+  stripeAccountStatus: { type: String, enum: ['pending', 'active', 'restricted', 'disabled'], default: 'pending' },
   coursesEnrolled: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Course' }],
   coursesPurchased: [{ 
     courseId: { type: mongoose.Schema.Types.ObjectId, ref: 'Course' },

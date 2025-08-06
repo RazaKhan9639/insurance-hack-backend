@@ -1,3 +1,4 @@
+const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { body, validationResult } = require('express-validator');
 const User = require('../models/User');
 const Course = require('../models/Course');
@@ -843,6 +844,116 @@ const processBankTransfer = async (req, res) => {
   }
 };
 
+// @desc    Process Stripe payout for commission payment
+// @route   POST /api/admin/commissions/stripe-payout
+// @access  Private (Admin only)
+const processStripePayout = async (req, res) => {
+  try {
+    const { agentId, amount, notes, transferReference } = req.body;
+
+    if (!agentId || !amount) {
+      return res.status(400).json(createErrorResponse('Agent ID and amount are required'));
+    }
+
+    if (!isValidObjectId(agentId)) {
+      return res.status(400).json(createErrorResponse('Invalid agent ID'));
+    }
+
+    // Find the agent
+    const agent = await User.findById(agentId);
+    if (!agent || agent.role !== 'agent') {
+      return res.status(404).json(createErrorResponse('Agent not found'));
+    }
+
+    // Check if agent has Stripe account connected
+    if (!agent.stripeAccountId) {
+      return res.status(400).json(createErrorResponse('Agent must have Stripe account connected for payouts'));
+    }
+
+    // Get pending commissions for this agent
+    const pendingCommissions = await Commission.find({
+      agent: agentId,
+      status: 'pending'
+    });
+
+    if (pendingCommissions.length === 0) {
+      return res.status(400).json(createErrorResponse('No pending commissions found for this agent'));
+    }
+
+    const totalPendingAmount = pendingCommissions.reduce((sum, commission) => sum + commission.amount, 0);
+    
+    if (amount > totalPendingAmount) {
+      return res.status(400).json(createErrorResponse(`Amount exceeds pending commission. Maximum payout: £${totalPendingAmount}`));
+    }
+
+    // Create Stripe payout
+    const payout = await stripe.payouts.create({
+      amount: Math.round(amount * 100), // Convert to cents
+      currency: 'usd',
+      destination: agent.stripeAccountId,
+      metadata: {
+        agentId: agentId,
+        transferReference: transferReference,
+        notes: notes
+      }
+    });
+
+    // Update commission status to paid
+    const commissionIds = pendingCommissions.map(c => c._id);
+    await Commission.updateMany(
+      { _id: { $in: commissionIds } },
+      { 
+        status: 'paid',
+        paidAt: new Date(),
+        paymentMethod: 'stripe_payout',
+        adminNotes: notes,
+        transferReference,
+        stripePayoutId: payout.id
+      }
+    );
+
+    // Create payout record
+    const payoutRecord = new Payout({
+      agent: agentId,
+      amount: amount,
+      status: 'completed',
+      paymentMethod: 'stripe_payout',
+      paymentReference: payout.id,
+      notes: notes,
+      adminNotes: `Stripe payout: ${payout.id}`,
+      processedBy: req.user.userId,
+      processedAt: new Date(),
+      completedAt: new Date(),
+      commissionIds: commissionIds,
+      totalCommissionsPaid: amount
+    });
+
+    await payoutRecord.save();
+
+    res.json(createSuccessResponse({
+      payout: {
+        id: payoutRecord._id,
+        stripePayoutId: payout.id,
+        agent: {
+          _id: agent._id,
+          username: agent.username,
+          firstName: agent.firstName,
+          lastName: agent.lastName
+        },
+        amount,
+        paymentMethod: 'stripe_payout',
+        paidAt: payoutRecord.completedAt,
+        notes,
+        transferReference
+      }
+    }, 'Stripe payout processed successfully'));
+
+  } catch (error) {
+    console.error('Process Stripe payout error:', error);
+    res.status(500).json(createErrorResponse('Server error', 500));
+  }
+};
+
 // @desc    Get payout history (Admin only)
 // @route   GET /api/admin/commissions/payouts
 // @access  Private (Admin only)
@@ -1560,5 +1671,6 @@ module.exports = {
   processPayoutRequest,
   createPayoutRequest,
   verifyAgentBankDetails,
-  processBankTransfer
+  processBankTransfer,
+  processStripePayout
 }; 
